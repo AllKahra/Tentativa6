@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dashboard Vulnerabilidades Avançado</title>
+
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<!-- DataTables -->
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.5/css/jquery.dataTables.min.css" />
+<script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.5/js/jquery.dataTables.min.js"></script>
+
+<style>
+  body {
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    margin: 20px;
+    background: #f4f7fa;
+    color: #333;
+  }
+  h1 {
+    text-align: center;
+    margin-bottom: 30px;
+  }
+  #uploadArea {
+    border: 2px dashed #bbb;
+    border-radius: 8px;
+    padding: 40px;
+    margin-bottom: 30px;
+    text-align: center;
+    color: #666;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+  }
+  #uploadArea.dragover {
+    background-color: #e0f0ff;
+    border-color: #3399ff;
+    color: #3399ff;
+  }
+  #dashboardContainer {
+    display: none;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  #chartContainer {
+    max-width: 700px;
+    margin: 0 auto 40px;
+  }
+  table.dataTable {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+  table.dataTable thead th {
+    background-color: #007acc;
+    color: white;
+  }
+  table.dataTable tbody tr:hover {
+    background-color: #d9eaff;
+  }
+</style>
+</head>
+<body>
+
+<h1>Dashboard de Vulnerabilidades</h1>
+
+<div id="uploadArea" tabindex="0">
+  Clique aqui ou arraste e solte o arquivo JSON do Nuclei para carregar o relatório
+</div>
+
+<div id="dashboardContainer">
+  <div id="chartContainer">
+    <canvas id="severityChart"></canvas>
+  </div>
+
+  <table id="vulnTable" class="display" style="width:100%">
+    <thead>
+      <tr>
+        <th>Host</th>
+        <th>Vulnerabilidade</th>
+        <th>Severidade</th>
+        <th>Descrição</th>
+        <th>Template</th>
+        <th>Matches</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+  // Cores para severidades
+  const severityColors = {
+    critical: '#e74c3c',
+    high: '#e67e22',
+    medium: '#f1c40f',
+    low: '#2ecc71',
+    info: '#3498db'
+  };
+
+  let fullData = [];
+  let filteredData = [];
+  let severityFilter = null;
+  let dataTable = null;
+  let severityChart = null;
+
+  const uploadArea = document.getElementById('uploadArea');
+  const dashboardContainer = document.getElementById('dashboardContainer');
+  const vulnTableBody = document.querySelector('#vulnTable tbody');
+
+  // Função para carregar e processar JSON do Nuclei (formato JSONL convertido em array)
+  function processData(dataArray) {
+    // Mapeia para formato padronizado
+    fullData = dataArray.map(item => ({
+      host: item.host || 'N/A',
+      name: (item.info && item.info.name) || 'N/A',
+      severity: (item.info && item.info.severity) || 'info',
+      description: (item.info && item.info.description) || 'N/A',
+      template: item.templateID || 'N/A',
+      matched: Array.isArray(item.matched) ? item.matched.join(', ') : (item.matched || 'N/A')
+    }));
+
+    filteredData = fullData; // sem filtro inicial
+
+    showDashboard();
+  }
+
+  // Mostrar dashboard
+  function showDashboard() {
+    uploadArea.style.display = 'none';
+    dashboardContainer.style.display = 'block';
+
+    if (!dataTable) {
+      dataTable = $('#vulnTable').DataTable({
+        data: filteredData,
+        columns: [
+          { data: 'host' },
+          { data: 'name' },
+          { data: 'severity', render: severity => severity.charAt(0).toUpperCase() + severity.slice(1) },
+          { data: 'description' },
+          { data: 'template' },
+          { data: 'matched' }
+        ],
+        order: [[2, 'desc']],
+        pageLength: 10,
+        lengthMenu: [5,10,25,50,100]
+      });
+    } else {
+      dataTable.clear();
+      dataTable.rows.add(filteredData);
+      dataTable.draw();
+    }
+
+    renderChart();
+  }
+
+  // Renderiza gráfico com Chart.js
+  function renderChart() {
+    // Conta as severidades no filtro atual
+    const counts = {};
+    fullData.forEach(item => {
+      counts[item.severity] = (counts[item.severity] || 0) + 1;
+    });
+
+    const labels = Object.keys(severityColors).filter(sev => counts[sev]);
+    const dataCounts = labels.map(sev => counts[sev]);
+
+    // Se já existe gráfico, destrói
+    if (severityChart) severityChart.destroy();
+
+    const ctx = document.getElementById('severityChart').getContext('2d');
+    severityChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Número de Vulnerabilidades',
+          data: dataCounts,
+          backgroundColor: labels.map(l => severityColors[l]),
+          borderRadius: 5,
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => `${ctx.parsed.y} vulnerabilidades`
+            }
+          }
+        },
+        onClick(evt, activeEls) {
+          if (!activeEls.length) return;
+          const idx = activeEls[0].index;
+          const clickedSeverity = labels[idx];
+          if (severityFilter === clickedSeverity) {
+            // desliga filtro
+            severityFilter = null;
+            filteredData = fullData;
+          } else {
+            severityFilter = clickedSeverity;
+            filteredData = fullData.filter(v => v.severity === severityFilter);
+          }
+          updateTable();
+          renderChart();
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: { stepSize: 1 }
+          }
+        }
+      }
+    });
+  }
+
+  // Atualiza tabela após filtro
+  function updateTable() {
+    if (!dataTable) return;
+    dataTable.clear();
+    dataTable.rows.add(filteredData);
+    dataTable.draw();
+  }
+
+  // Eventos drag & drop e clique para upload
+  uploadArea.addEventListener('dragover', e => {
+    e.preventDefault();
+    uploadArea.classList.add('dragover');
+  });
+  uploadArea.addEventListener('dragleave', e => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+  });
+  uploadArea.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    handleFile(file);
+  });
+  uploadArea.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,.jsonl';
+    input.onchange = e => {
+      const file = e.target.files[0];
+      handleFile(file);
+    };
+    input.click();
+  });
+
+  // Lê arquivo JSON do usuário e processa
+  function handleFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        // Para JSONL (linhas JSON), converte para array JSON
+        const text = e.target.result.trim();
+        let jsonData;
+        if (text.startsWith('[')) {
+          jsonData = JSON.parse(text);
+        } else {
+          // JSONL: cada linha um objeto JSON
+          const lines = text.split('\n').filter(l => l.trim());
+          jsonData = lines.map(l => JSON.parse(l));
+        }
+        processData(jsonData);
+      } catch (err) {
+        alert('Erro ao ler arquivo JSON: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  }
+</script>
+
+</body>
+</html>
