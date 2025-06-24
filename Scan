@@ -1,0 +1,67 @@
+#!/bin/bash
+export PATH=$PATH:/home/kali/.pdtm/go/bin
+
+# Verifica se os comandos necessários estão instalados
+for scanner in naabu nuclei; do
+    if ! command -v $scanner &> /dev/null; then
+        echo "$scanner não encontrado! Instale-o antes de executar este script."
+        exit 1
+    fi
+done
+
+TARGET=$1
+if [ -z "$TARGET" ]; then
+    echo "Uso: $0 <IP-alvo>"
+    exit 1
+fi
+
+echo "[+] Iniciando escaneamento com Naabu no alvo: $TARGET (timeout: 120s)"
+
+timeout 120s naabu -host $TARGET -p 80,139,445,10000,20000 -rate 100 -silent > ports.txt
+NAABU_EXIT=$?
+
+if [ $NAABU_EXIT -eq 124 ]; then
+    echo "[!] O Naabu atingiu o tempo limite de 120 segundos e foi interrompido."
+elif [ $NAABU_EXIT -ne 0 ]; then
+    echo "[!] O Naabu encontrou um erro (código de saída $NAABU_EXIT)."
+fi
+
+if [ ! -s ports.txt ]; then
+    echo "[!] Nenhuma porta encontrada ou erro durante o escaneamento."
+    exit 1
+fi
+
+echo "[+] Portas encontradas:"
+cat ports.txt
+
+WEB_PORTS=(80 10000 20000)
+COMMON_PATHS=("/")
+
+> targets.txt
+while read line; do
+    IP=$(echo "$line" | cut -d':' -f1)
+    PORT=$(echo "$line" | cut -d':' -f2)
+
+    if [[ " ${WEB_PORTS[@]} " =~ " $PORT " ]]; then
+        for proto in http https; do
+            for path in "${COMMON_PATHS[@]}"; do
+                echo "${proto}://$IP:${PORT}${path}" >> targets.txt
+            done
+        done
+    fi
+done < ports.txt
+
+if [ ! -s targets.txt ]; then
+    echo "[!] Nenhum serviço web identificado para análise com Nuclei."
+    exit 1
+fi
+
+echo "[+] Rodando o Nuclei nos alvos encontrados (modo JSON)..."
+nuclei -l targets.txt -severity low,medium,high,critical -json -o nuclei_results.json -silent
+
+if [ ! -s nuclei_results.json ]; then
+    echo "[*] Nenhuma vulnerabilidade encontrada ou erro ao gerar resultados."
+    exit 0
+fi
+
+echo "[+] Scan finalizado. Resultados salvos em nuclei_results.json"
